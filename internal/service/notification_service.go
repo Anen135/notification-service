@@ -35,9 +35,6 @@ func New(repo *repository.Repository, q *queue.RabbitMQ, senders map[models.Chan
 	}
 }
 
-// CreateAndEnqueue validates the request, resolves a template if requested,
-// persists the notification as "pending", and publishes it to RabbitMQ for
-// asynchronous delivery. Returns the created notification.
 func (s *Service) CreateAndEnqueue(ctx context.Context, req models.CreateNotificationRequest) (*models.Notification, error) {
 	if req.Channel != models.ChannelEmail && req.Channel != models.ChannelSMS && req.Channel != models.ChannelPush {
 		return nil, fmt.Errorf("invalid channel %q", req.Channel)
@@ -101,10 +98,6 @@ func (s *Service) CreateTemplate(ctx context.Context, t *models.Template) error 
 	return s.repo.CreateTemplate(ctx, t)
 }
 
-// ProcessMessage is invoked by a worker for every queue delivery. It re-reads
-// current notification state, attempts delivery via the matching sender, and
-// on failure either schedules a retry or moves the message to the failed
-// queue once attempts are exhausted.
 func (s *Service) ProcessMessage(ctx context.Context, msg models.QueueMessage) error {
 	n, err := s.repo.GetNotification(ctx, msg.NotificationID)
 	if err != nil {
@@ -144,8 +137,6 @@ func (s *Service) ProcessMessage(ctx context.Context, msg models.QueueMessage) e
 	return s.queue.PublishRetry(ctx, n.Channel, msg, s.retryDelayMS)
 }
 
-// render performs simple {{key}} placeholder substitution. Kept dependency-free;
-// swap for text/template if richer templating logic is needed later.
 func render(tpl string, data map[string]string) string {
 	out := tpl
 	for k, v := range data {

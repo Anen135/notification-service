@@ -60,7 +60,6 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    # Scale with: docker compose up --scale worker=3
     environment:
       POSTGRES_DSN: "postgres://notifier:notifier@postgres:5432/notifications?sslmode=disable"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
@@ -76,7 +75,6 @@ services:
       FCM_SERVER_KEY: ""
       FCM_ENDPOINT: "https://fcm.googleapis.com/fcm/send"
 
-  # Local SMTP catcher for development/testing - view sent emails at http://localhost:8025
   mailhog:
     image: mailhog/mailhog
     restart: unless-stopped

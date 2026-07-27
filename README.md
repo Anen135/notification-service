@@ -1,84 +1,69 @@
 # Notification Service
 
-Асинхронный сервис доставки уведомлений по трём каналам: **email**, **SMS** и **push**.
-Написан на Go, использует RabbitMQ как очередь сообщений и PostgreSQL как хранилище
-статусов/шаблонов. Полностью контейнеризирован через Docker Compose.
+Асинхронный сервис уведомлений: email, SMS, push. Пишем на Go, в качестве очереди используем RabbitMQ, данные храним в Postgres. Запускается через Docker.
 
-## Архитектура
+## Общая схема
 
 ```
-                 ┌──────────────┐
-  HTTP клиент ──▶│   API (Go)   │──▶ PostgreSQL (сохраняет notification, status=pending)
-                 └──────┬───────┘
-                        │ publish(routing_key = channel)
-                        ▼
-              ┌───────────────────┐
-              │  RabbitMQ topic   │  exchange: notifications
-              │  exchange         │
-              └───┬───────┬───────┘
-                  │       │       │
-          email queue  sms queue  push queue
-                  │       │       │
-                  ▼       ▼       ▼
-              ┌─────────────────────┐
-              │   Worker (Go)       │  consumes все три очереди
-              │  email/sms/push     │  goroutine на канал
-              │  sender-ы           │
-              └─────────┬───────────┘
-                         │ update status (sent/failed/retrying)
-                         ▼
-                   PostgreSQL
+              ┌──────────────┐
+  Клиент ─────▶  API (Go)  ──▶  Postgres (сохраняем уведомление, статус pending)
+              └──────┬──────┘
+                     │ публикуем в RabbitMQ
+                     ▼
+           ┌───────────────────┐
+           │  RabbitMQ         │  exchange: notifications
+           └───┬───────┬───────┘
+               │       │       │
+         email   sms   push
+               │       │       │
+               ▼       ▼       ▼
+           ┌──────────────────────┐
+           │  Worker (Go)          │  слушает все очереди, по одной горутине на канал
+           └──────────┬───────────┘
+                      │ обновляет статус (sent / failed)
+                      ▼
+                Postgres
 ```
 
-### Ключевые решения
+## Ключевые моменты
 
-- **API и Worker — отдельные бинарники** (`cmd/api`, `cmd/worker`), из одного кода можно
-  собрать оба образа (см. `Dockerfile`, `ARG BINARY`). Это позволяет масштабировать worker
-  независимо от API (`docker compose up --scale worker=3`).
-- **Надёжная доставка**: сообщение публикуется в RabbitMQ только после успешной записи
-  в PostgreSQL со статусом `pending`. Worker при обработке заново читает состояние из БД
-  (защита от рассинхронизации, если запись успели изменить).
-- **Retry с задержкой**: при неудачной отправке сообщение публикуется в retry-очередь
-  с TTL (`RETRY_DELAY_MS`), после истечения TTL RabbitMQ dead-letter'ит его обратно
-  в основной exchange с тем же routing key — так реализована задержка без плагинов.
-- **Dead-letter/failed очередь**: после исчерпания `MAX_ATTEMPTS` уведомление помечается
-  `status=failed` в БД и сообщение уходит в очередь `notifications.failed` для ручного
-  разбора/алертинга.
-- **Шаблоны**: можно один раз сохранить шаблон (`POST /api/v1/templates`) и затем
-  создавать уведомления через `template_name` + `template_data` (простая подстановка
-  `{{key}}`).
+- **Два бинарника**: `cmd/api` и `cmd/worker`. Собираются из одного Dockerfile, можно отдельно масштабировать воркеров (`--scale worker=N`).
+- **Надёжность**: запись в Postgres происходит до публикации в очередь. Воркер при обработке перечитывает последнее состояние из БД — если вдруг что-то изменили между публикацией и обработкой, не сломается.
+- **Ретраи**: при ошибке отправки сообщение уходит в retry-очередь с задержкой (`RETRY_DELAY_MS`). ТTL на сообщении, после истечения RabbitMQ сам возвращает его в основную очередь.
+- **Мёртвые письма**: если уведомление не отправили за `MAX_ATTEMPTS` попыток — помечаем `failed` и складываем в отдельную очередь `notifications.failed`, чтобы можно было разобрать вручную.
+- **Шаблоны**: можно сохранить шаблон один раз, а потом создавать уведомления через `template_name` + `template_data`. Подстановка простая: `{{ключ}}`.
 
 ## Стек
 
-| Компонент       | Технология                                      |
-|-----------------|--------------------------------------------------|
-| Язык            | Go 1.22                                          |
-| HTTP роутер     | chi                                              |
-| Очередь         | RabbitMQ (amqp091-go)                            |
-| БД              | PostgreSQL 16 (pgx/v5, pgxpool)                  |
-| Email           | SMTP (net/smtp), в dev — MailHog                 |
-| SMS             | HTTP REST провайдер, совместимый с Twilio API    |
-| Push            | Firebase Cloud Messaging (legacy HTTP API)       |
-| Контейнеризация | Docker + Docker Compose                          |
+| Компонент       | Что используем                       |
+|-----------------|--------------------------------------|
+| Язык            | Go 1.22                              |
+| HTTP            | chi                                  |
+| Очередь         | RabbitMQ (amqp091-go)                |
+| БД              | PostgreSQL 16 (pgx/v5, пуллинг)       |
+| Email           | net/smtp, в dev MailHog               |
+| SMS             | HTTP-провайдер, совместимый с Twilio  |
+| Push            | FCM (legacy HTTP)                    |
+| Контейнеризация | Docker + Compose                     |
 
-## Быстрый старт
+## Запуск
 
 ```bash
 git clone <repo>
 cd notification-service
-cp .env.example .env      # при необходимости отредактируйте
+cp .env.example .env  # поправьте параметры под себя
 
-go mod tidy                # сгенерировать go.sum перед первой сборкой
+go mod tidy
 
 docker compose up --build
 ```
 
 После старта:
-- API:              http://localhost:8080
-- RabbitMQ UI:       http://localhost:15672 (guest/guest)
-- MailHog (письма):  http://localhost:8025
+- API: http://localhost:8080
+- RabbitMQ UI: http://localhost:15672 (guest/guest)
+- Письма (MailHog): http://localhost:8025
 
-## API
+## Примеры запросов
 
 ### Создать уведомление
 
@@ -93,7 +78,7 @@ curl -X POST http://localhost:8080/api/v1/notifications \
       }'
 ```
 
-Ответ (`202 Accepted`):
+Ответ 202:
 ```json
 {
   "id": "b1f3c2...",
@@ -109,16 +94,16 @@ curl -X POST http://localhost:8080/api/v1/notifications \
 ### Проверить статус
 
 ```bash
-curl http://localhost:8080/api/v1/notifications/b1f3c2...
+curl http://localhost:8080/api/v1/notifications/{id}
 ```
 
-### Список уведомлений (с фильтром по статусу)
+### Список с фильтром
 
 ```bash
 curl "http://localhost:8080/api/v1/notifications?status=failed&limit=20"
 ```
 
-### Создать шаблон и использовать его
+### Шаблоны
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/templates \
@@ -126,7 +111,7 @@ curl -X POST http://localhost:8080/api/v1/templates \
   -d '{
         "name": "order_confirmation",
         "channel": "sms",
-        "body": "Заказ {{order_id}} подтверждён, ожидайте {{eta}}."
+        "body": "Заказ {{order_id}} подтверждён, курьер приедет через {{eta}}."
       }'
 
 curl -X POST http://localhost:8080/api/v1/notifications \
@@ -143,26 +128,15 @@ curl -X POST http://localhost:8080/api/v1/notifications \
 
 ```
 cmd/
-  api/            точка входа HTTP API
-  worker/         точка входа воркера (консьюмер RabbitMQ)
+  api/       запуск HTTP API
+  worker/    запуск воркера (consumer RabbitMQ)
 internal/
-  api/            роутер и HTTP-хендлеры
-  config/         загрузка конфигурации из env
-  models/         доменные модели
-  queue/          топология и клиент RabbitMQ
-  repository/     доступ к PostgreSQL
-  sender/         реализации отправки (email/sms/push)
-  service/        бизнес-логика (создание, обработка, ретраи)
-migrations/       SQL-миграции (авто-применяются при первом старте postgres)
+  api/       роутер и хендлеры
+  config/    загрузка конфига из env
+  models/    доменные сущности и DTO
+  queue/     работа с RabbitMQ, топология
+  repository/ доступ к Postgres
+  sender/    провайдеры доставки (email, sms, push)
+  service/   основная логика
+migrations/  SQL миграции
 ```
-
-## Расширение
-
-- Чтобы добавить нового SMS/push провайдера — реализуйте интерфейс `sender.Sender`
-  и зарегистрируйте его в `cmd/worker/main.go`.
-- Чтобы поменять политику ретраев — измените `MAX_ATTEMPTS`/`RETRY_DELAY_MS` в `.env`.
-- Для продакшена рекомендуется:
-  - вынести миграции на отдельный шаг деплоя (например, `golang-migrate`) вместо
-    авто-применения через `docker-entrypoint-initdb.d`;
-  - добавить TLS для RabbitMQ/PostgreSQL и секреты через Vault/SSM вместо `.env`;
-  - подключить метрики (Prometheus) и трассировку (OpenTelemetry).

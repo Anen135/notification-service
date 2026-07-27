@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	MainExchange  = "notifications"       // topic exchange, routing keys = channel names
-	RetryExchange = "notifications.retry" // direct exchange, one retry queue per channel
+	MainExchange  = "notifications"
+	RetryExchange = "notifications.retry"
 	FailedQueue   = "notifications.failed"
 )
 
@@ -53,12 +53,6 @@ func (r *RabbitMQ) Close() {
 	}
 }
 
-// declareTopology sets up:
-//   - main topic exchange "notifications" with one durable queue per channel
-//   - a retry exchange + per-channel retry queue with a TTL; messages that
-//     expire in the retry queue are dead-lettered back into the main exchange
-//     with their original routing key, achieving delayed re-delivery
-//   - a failed queue for messages that exhausted all retry attempts
 func (r *RabbitMQ) declareTopology() error {
 	if err := r.ch.ExchangeDeclare(MainExchange, "topic", true, false, false, false, nil); err != nil {
 		return fmt.Errorf("declare main exchange: %w", err)
@@ -102,7 +96,6 @@ func (r *RabbitMQ) declareTopology() error {
 	return nil
 }
 
-// Publish sends a notification message to the main exchange for immediate processing.
 func (r *RabbitMQ) Publish(ctx context.Context, channel models.Channel, msg models.QueueMessage) error {
 	body, err := json.Marshal(msg)
 	if err != nil {
@@ -118,7 +111,6 @@ func (r *RabbitMQ) Publish(ctx context.Context, channel models.Channel, msg mode
 	})
 }
 
-// PublishRetry schedules a message for delayed re-delivery via the retry queue's TTL.
 func (r *RabbitMQ) PublishRetry(ctx context.Context, channel models.Channel, msg models.QueueMessage, delayMS int) error {
 	body, err := json.Marshal(msg)
 	if err != nil {
@@ -135,7 +127,6 @@ func (r *RabbitMQ) PublishRetry(ctx context.Context, channel models.Channel, msg
 	})
 }
 
-// PublishFailed moves a message that exhausted all retries into the dead-letter/failed queue for inspection.
 func (r *RabbitMQ) PublishFailed(ctx context.Context, msg models.QueueMessage) error {
 	body, err := json.Marshal(msg)
 	if err != nil {
@@ -151,8 +142,6 @@ func (r *RabbitMQ) PublishFailed(ctx context.Context, msg models.QueueMessage) e
 	})
 }
 
-// Consume returns a channel of deliveries for the given notification channel's queue.
-// Prefetch is set to 1 so a single worker processes one message at a time (fair dispatch).
 func (r *RabbitMQ) Consume(channel models.Channel) (<-chan amqp.Delivery, error) {
 	if err := r.ch.Qos(1, 0, false); err != nil {
 		return nil, fmt.Errorf("set qos: %w", err)
