@@ -4,25 +4,24 @@
 
 ## Общая схема
 
-```
-              ┌──────────────┐
-  Клиент ─────▶  API (Go)  ──▶  Postgres (сохраняем уведомление, статус pending)
-              └──────┬──────┘
-                     │ публикуем в RabbitMQ
-                     ▼
-           ┌───────────────────┐
-           │  RabbitMQ         │  exchange: notifications
-           └───┬───────┬───────┘
-               │       │       │
-         email   sms   push
-               │       │       │
-               ▼       ▼       ▼
-           ┌──────────────────────┐
-           │  Worker (Go)          │  слушает все очереди, по одной горутине на канал
-           └──────────┬───────────┘
-                      │ обновляет статус (sent / failed)
-                      ▼
-                Postgres
+```mermaid
+flowchart TD
+    Client["Client"] --> API["API (Go)"]
+
+    DB[(Postgres)]
+
+    API -->|Save notification<br/>status: pending| DB
+    API -->|Publish message| MQ["RabbitMQ<br/>exchange: notifications"]
+
+    MQ --> Email["email"]
+    MQ --> SMS["sms"]
+    MQ --> Push["push"]
+
+    Email --> Worker["Worker (Go)<br/>listens to all queues<br/>one goroutine per channel"]
+    SMS --> Worker
+    Push --> Worker
+
+    Worker -->|Update status<br/>sent / failed| DB
 ```
 
 ## Ключевые моменты
