@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: notifier
+      POSTGRES_PASSWORD: notifier
+      POSTGRES_DB: notifications
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifier -d notifications"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      args:
+        BINARY: api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_PORT: "8080"
+      POSTGRES_DSN: "postgres://notifier:notifier@postgres:5432/notifications?sslmode=disable"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      MAX_ATTEMPTS: "3"
+      RETRY_DELAY_MS: "5000"
+
+  worker:
+    build:
+      context: .
+      args:
+        BINARY: worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    # Scale with: docker compose up --scale worker=3
+    environment:
+      POSTGRES_DSN: "postgres://notifier:notifier@postgres:5432/notifications?sslmode=disable"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      MAX_ATTEMPTS: "3"
+      RETRY_DELAY_MS: "5000"
+      SMTP_HOST: "mailhog"
+      SMTP_PORT: "1025"
+      SMTP_FROM: "no-reply@example.com"
+      SMS_PROVIDER_URL: ""
+      SMS_PROVIDER_SID: ""
+      SMS_PROVIDER_TOKEN: ""
+      SMS_FROM: ""
+      FCM_SERVER_KEY: ""
+      FCM_ENDPOINT: "https://fcm.googleapis.com/fcm/send"
+
+  # Local SMTP catcher for development/testing - view sent emails at http://localhost:8025
+  mailhog:
+    image: mailhog/mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+volumes:
+  pg_data:
